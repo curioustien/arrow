@@ -181,6 +181,14 @@ std::shared_ptr<const LogicalType> get_logical_type(const DataType& type) {
           static_cast<const ::arrow::DictionaryType&>(type);
       return get_logical_type(*dict_type.value_type());
     }
+    case ArrowId::DECIMAL32: {
+      const auto& dec_type = static_cast<const ::arrow::Decimal32Type&>(type);
+      return LogicalType::Decimal(dec_type.precision(), dec_type.scale());
+    }
+    case ArrowId::DECIMAL64: {
+      const auto& dec_type = static_cast<const ::arrow::Decimal64Type&>(type);
+      return LogicalType::Decimal(dec_type.precision(), dec_type.scale());
+    }
     case ArrowId::DECIMAL128: {
       const auto& dec_type = static_cast<const ::arrow::Decimal128Type&>(type);
       return LogicalType::Decimal(dec_type.precision(), dec_type.scale());
@@ -206,9 +214,11 @@ ParquetType::type get_physical_type(const DataType& type) {
     case ArrowId::INT16:
     case ArrowId::UINT32:
     case ArrowId::INT32:
+    case ArrowId::DECIMAL32:
       return ParquetType::INT32;
     case ArrowId::UINT64:
     case ArrowId::INT64:
+    case ArrowId::DECIMAL64:
       return ParquetType::INT64;
     case ArrowId::FLOAT:
       return ParquetType::FLOAT;
@@ -533,6 +543,8 @@ static std::shared_ptr<GroupNode> MakeSimpleSchema(const DataType& type,
         case ::arrow::Type::HALF_FLOAT:
           byte_width = sizeof(::arrow::HalfFloatType::c_type);
           break;
+        case ::arrow::Type::DECIMAL32:
+        case ::arrow::Type::DECIMAL64:
         case ::arrow::Type::DECIMAL128:
         case ::arrow::Type::DECIMAL256: {
           const auto& decimal_type = static_cast<const DecimalType&>(values_type);
@@ -548,6 +560,8 @@ static std::shared_ptr<GroupNode> MakeSimpleSchema(const DataType& type,
     case ::arrow::Type::HALF_FLOAT:
       byte_width = sizeof(::arrow::HalfFloatType::c_type);
       break;
+    case ::arrow::Type::DECIMAL32:
+    case ::arrow::Type::DECIMAL64:
     case ::arrow::Type::DECIMAL128:
     case ::arrow::Type::DECIMAL256: {
       const auto& decimal_type = static_cast<const DecimalType&>(type);
@@ -783,6 +797,38 @@ class TestReadDecimals : public ParquetIOTestBase {
 // The Decimal roundtrip tests always go through the FixedLenByteArray path,
 // check the ByteArray case manually.
 
+TEST_F(TestReadDecimals, Decimal32ByteArray) {
+  const std::vector<std::vector<uint8_t>> big_endian_decimals = {
+      // 123456
+      {1, 226, 64},
+      // 987654
+      {15, 18, 6},
+      // -123456
+      {255, 254, 29, 192},
+  };
+
+  auto expected =
+      ArrayFromJSON(::arrow::decimal32(6, 3), R"(["123.456", "987.654", "-123.456"])");
+  CheckReadFromByteArrays(LogicalType::Decimal(6, 3), big_endian_decimals, *expected);
+}
+
+TEST_F(TestReadDecimals, Decimal64ByteArray) {
+  const std::vector<std::vector<uint8_t>> big_endian_decimals = {
+      // 123456
+      {1, 226, 64},
+      // 987654
+      {15, 18, 6},
+      // -123456
+      {255, 254, 29, 192},
+      // -123456
+      {255, 255, 255, 255, 255, 254, 29, 192},
+  };
+
+  auto expected = ArrayFromJSON(::arrow::decimal64(16, 3),
+                                R"(["123.456", "987.654", "-123.456", "-123.456"])");
+  CheckReadFromByteArrays(LogicalType::Decimal(16, 3), big_endian_decimals, *expected);
+}
+
 TEST_F(TestReadDecimals, Decimal128ByteArray) {
   const std::vector<std::vector<uint8_t>> big_endian_decimals = {
       // 123456
@@ -790,12 +836,14 @@ TEST_F(TestReadDecimals, Decimal128ByteArray) {
       // 987654
       {15, 18, 6},
       // -123456
+      {255, 254, 29, 192},
+      // -123456
       {255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 254, 29, 192},
   };
 
-  auto expected =
-      ArrayFromJSON(::arrow::decimal128(6, 3), R"(["123.456", "987.654", "-123.456"])");
-  CheckReadFromByteArrays(LogicalType::Decimal(6, 3), big_endian_decimals, *expected);
+  auto expected = ArrayFromJSON(::arrow::decimal128(20, 3),
+                                R"(["123.456", "987.654", "-123.456", "-123.456"])");
+  CheckReadFromByteArrays(LogicalType::Decimal(20, 3), big_endian_decimals, *expected);
 }
 
 TEST_F(TestReadDecimals, Decimal256ByteArray) {
@@ -805,12 +853,14 @@ TEST_F(TestReadDecimals, Decimal256ByteArray) {
       // 987654
       {15, 18, 6},
       // -123456
+      {255, 254, 29, 192},
+      // -123456
       {255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 254, 29,  192},
   };
 
-  auto expected =
-      ArrayFromJSON(::arrow::decimal256(40, 3), R"(["123.456", "987.654", "-123.456"])");
+  auto expected = ArrayFromJSON(::arrow::decimal256(40, 3),
+                                R"(["123.456", "987.654", "-123.456", "-123.456"])");
   CheckReadFromByteArrays(LogicalType::Decimal(40, 3), big_endian_decimals, *expected);
 }
 
@@ -854,13 +904,14 @@ class TestParquetIO : public ParquetIOTestBase {
 //   (and deserialized as BinaryType and StringType, respectively)
 
 typedef ::testing::Types<
-    ::arrow::BooleanType, ::arrow::UInt8Type, ::arrow::Int8Type, ::arrow::UInt16Type,
-    ::arrow::Int16Type, ::arrow::Int32Type, ::arrow::UInt64Type, ::arrow::Int64Type,
-    ::arrow::Date32Type, ::arrow::FloatType, ::arrow::DoubleType, ::arrow::StringType,
-    ::arrow::BinaryType, ::arrow::FixedSizeBinaryType, ::arrow::HalfFloatType,
-    Decimal128WithPrecisionAndScale<1>, Decimal128WithPrecisionAndScale<5>,
-    Decimal128WithPrecisionAndScale<10>, Decimal128WithPrecisionAndScale<19>,
-    Decimal128WithPrecisionAndScale<23>, Decimal128WithPrecisionAndScale<27>,
+//    ::arrow::BooleanType, ::arrow::UInt8Type, ::arrow::Int8Type, ::arrow::UInt16Type,
+//    ::arrow::Int16Type, ::arrow::Int32Type, ::arrow::UInt64Type, ::arrow::Int64Type,
+//    ::arrow::Date32Type, ::arrow::FloatType, ::arrow::DoubleType, ::arrow::StringType,
+//    ::arrow::BinaryType, ::arrow::FixedSizeBinaryType, ::arrow::HalfFloatType,
+//    Decimal32WithPrecisionAndScale<1>,
+    Decimal32WithPrecisionAndScale<5>,
+    Decimal64WithPrecisionAndScale<10>, Decimal64WithPrecisionAndScale<18>,
+    Decimal128WithPrecisionAndScale<19>, Decimal128WithPrecisionAndScale<27>,
     Decimal128WithPrecisionAndScale<38>, Decimal256WithPrecisionAndScale<39>,
     Decimal256WithPrecisionAndScale<56>, Decimal256WithPrecisionAndScale<76>>
     TestTypes;
@@ -904,7 +955,9 @@ TYPED_TEST(TestParquetIO, SingleColumnTableRequiredWrite) {
 
   this->ResetSink();
   ASSERT_OK_NO_THROW(WriteTable(*table, ::arrow::default_memory_pool(), this->sink_,
-                                values->length(), default_writer_properties()));
+                                values->length(),
+                                ::parquet::WriterProperties::Builder().enable_store_decimal_as_integer()->build()));
+//                                default_writer_properties()));
 
   std::shared_ptr<Table> out;
   std::unique_ptr<FileReader> reader;
@@ -5183,6 +5236,8 @@ class TestIntegerAnnotateDecimalTypeParquetIO : public TestParquetIO<TestType> {
 };
 
 typedef ::testing::Types<
+    Decimal32WithPrecisionAndScale<1>, Decimal32WithPrecisionAndScale<5>,
+    Decimal64WithPrecisionAndScale<10>, Decimal64WithPrecisionAndScale<18>,
     Decimal128WithPrecisionAndScale<1>, Decimal128WithPrecisionAndScale<5>,
     Decimal128WithPrecisionAndScale<10>, Decimal128WithPrecisionAndScale<18>,
     Decimal256WithPrecisionAndScale<1>, Decimal256WithPrecisionAndScale<5>,

@@ -2374,7 +2374,7 @@ struct SerializeFunctor<
   }
 
   // Parquet's Decimal are stored with FixedLength values where the length is
-  // proportional to the precision. Arrow's Decimal are always stored with 16/32
+  // proportional to the precision. Arrow's Decimal are always stored with 4/8/16/32
   // bytes. Thus the internal FLBA pointer must be adjusted by the offset calculated
   // here.
   int32_t Offset(const Array& array) {
@@ -2395,17 +2395,24 @@ struct SerializeFunctor<
   FixedLenByteArray FixDecimalEndianness(const uint8_t* in, int64_t offset) {
     const auto* u64_in = reinterpret_cast<const int64_t*>(in);
     auto out = reinterpret_cast<const uint8_t*>(scratch) + offset;
-    static_assert(byte_width == 16 || byte_width == 32,
-                  "only 16 and 32 byte Decimals supported");
-    if (byte_width == 32) {
+    static_assert(byte_width == ::arrow::Decimal32Type::kByteWidth ||
+                      byte_width == ::arrow::Decimal64Type::kByteWidth ||
+                      byte_width == ::arrow::Decimal128Type::kByteWidth ||
+                      byte_width == ::arrow::Decimal256Type::kByteWidth,
+                  "only 4/8/16/32 byte Decimals supported");
+
+    if constexpr (byte_width == ::arrow::Decimal32Type::kByteWidth || byte_width == ::arrow::Decimal64Type::kByteWidth) {
+      *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[0]);
+    } else if constexpr (byte_width == ::arrow::Decimal128Type::kByteWidth) {
+      *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[1]);
+      *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[0]);
+    } else {
       *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[3]);
       *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[2]);
       *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[1]);
       *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[0]);
-    } else {
-      *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[1]);
-      *scratch++ = ::arrow::bit_util::ToBigEndian(u64_in[0]);
     }
+
     return FixedLenByteArray(out);
   }
 
