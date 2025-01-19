@@ -63,6 +63,12 @@ using arrow::BooleanArray;
 using arrow::ChunkedArray;
 using arrow::DataType;
 using arrow::Datum;
+using arrow::Decimal32;
+using arrow::Decimal32Array;
+using arrow::Decimal32Type;
+using arrow::Decimal64;
+using arrow::Decimal64Array;
+using arrow::Decimal64Type;
 using arrow::Decimal128;
 using arrow::Decimal128Array;
 using arrow::Decimal128Type;
@@ -212,9 +218,21 @@ Status ExtractDecimalMinMaxFromBytesType(const Statistics& statistics,
   const DecimalLogicalType& decimal_type =
       checked_cast<const DecimalLogicalType&>(logical_type);
 
+  auto precision = decimal_type.precision();
+  auto scale = decimal_type.scale();
+  std::shared_ptr<DataType> arrow_type;
+  if (precision <= Decimal32Type::kMaxPrecision) {
+
+  } else if (precision <= Decimal64Type::kMaxPrecision) {
+
+  } else if (precision <= Decimal128Type::kMaxPrecision) {
+
+  } else {
+
+  }
+
   Result<std::shared_ptr<DataType>> maybe_type =
       Decimal128Type::Make(decimal_type.precision(), decimal_type.scale());
-  std::shared_ptr<DataType> arrow_type;
   if (maybe_type.ok()) {
     arrow_type = maybe_type.ValueOrDie();
     ARROW_ASSIGN_OR_RAISE(
@@ -570,7 +588,8 @@ Status TransferBinary(RecordReader* reader, MemoryPool* pool,
 }
 
 // ----------------------------------------------------------------------
-// INT32 / INT64 / BYTE_ARRAY / FIXED_LEN_BYTE_ARRAY -> Decimal128 || Decimal256
+// INT32 / INT64 / BYTE_ARRAY / FIXED_LEN_BYTE_ARRAY
+// -> Decimal32 || Decimal64 || Decimal128 || Decimal256
 
 template <typename DecimalType>
 Status RawBytesToDecimalBytes(const uint8_t* value, int32_t byte_width,
