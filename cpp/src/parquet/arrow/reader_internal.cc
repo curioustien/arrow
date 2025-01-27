@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "arrow/array.h"
+#include "arrow/array/array_decimal.h"
 #include "arrow/compute/api.h"
 #include "arrow/datum.h"
 #include "arrow/io/memory.h"
@@ -37,6 +38,7 @@
 #include "arrow/status.h"
 #include "arrow/table.h"
 #include "arrow/type.h"
+#include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/base64.h"
 #include "arrow/util/bit_util.h"
@@ -221,6 +223,8 @@ Status ExtractDecimalMinMaxFromBytesType(const Statistics& statistics,
   auto scale = decimal_type.scale();
   std::shared_ptr<DataType> arrow_type;
 
+  // By default, we use the decimal type based on precision, but
+  // it can be cast to a wider decimal type from the caller
   if (precision <= Decimal32Type::kMaxPrecision) {
     ARROW_ASSIGN_OR_RAISE(arrow_type, Decimal32Type::Make(precision, scale));
     ARROW_ASSIGN_OR_RAISE(
@@ -728,7 +732,7 @@ struct DecimalConverter<DecimalArrayType, ByteArrayType> {
   }
 };
 
-/// \brief Convert an Int32 or Int64 array into a Decimal32Array or Decimal64Array
+/// \brief Convert an Int32 or Int64 array into a Decimal32/64/128/256Array
 /// The parquet spec allows systems to write decimals in int32, int64 if the values are
 /// small enough to fit in less 4 bytes or less than 8 bytes, respectively.
 /// This function implements the conversion from int32 and int64 arrays to decimal arrays.
@@ -741,7 +745,9 @@ static Status DecimalIntegerTransfer(RecordReader* reader, MemoryPool* pool,
   // Decimal32 and Decimal64 are only Arrow constructs.  Parquet does not
   // specifically distinguish between decimal byte widths.
   DCHECK(field->type()->id() == ::arrow::Type::DECIMAL32 ||
-         field->type()->id() == ::arrow::Type::DECIMAL64);
+         field->type()->id() == ::arrow::Type::DECIMAL64 ||
+         field->type()->id() == ::arrow::Type::DECIMAL128 ||
+         field->type()->id() == ::arrow::Type::DECIMAL256);
 
   const int64_t length = reader->values_written();
 
@@ -767,8 +773,14 @@ static Status DecimalIntegerTransfer(RecordReader* reader, MemoryPool* pool,
     if constexpr (std::is_same_v<DecimalArrayType, Decimal32Array>) {
       ::arrow::Decimal32 decimal(value);
       decimal.ToBytes(out_ptr);
-    } else {
+    } else if constexpr (std::is_same_v<DecimalArrayType, Decimal64Array>) {
       ::arrow::Decimal64 decimal(value);
+      decimal.ToBytes(out_ptr);
+    } else if constexpr (std::is_same_v<DecimalArrayType, Decimal128Array>) {
+      ::arrow::Decimal128 decimal(value);
+      decimal.ToBytes(out_ptr);
+    } else {
+      ::arrow::Decimal256 decimal(value);
       decimal.ToBytes(out_ptr);
     }
   }
@@ -929,6 +941,10 @@ Status TransferColumnData(RecordReader* reader,
     } break;
     case ::arrow::Type::DECIMAL64: {
       switch (descr->physical_type()) {
+        case ::parquet::Type::INT32: {
+          auto fn = DecimalIntegerTransfer<Decimal64Array, Int32Type>;
+          RETURN_NOT_OK(fn(reader, pool, value_field, &result));
+        } break;
         case ::parquet::Type::INT64: {
           auto fn = DecimalIntegerTransfer<Decimal64Array, Int64Type>;
           RETURN_NOT_OK(fn(reader, pool, value_field, &result));
@@ -943,12 +959,20 @@ Status TransferColumnData(RecordReader* reader,
         } break;
         default:
           return Status::Invalid(
-              "Physical type for decimal64 must be int64, byte array, or fixed length "
-              "binary");
+              "Physical type for decimal64 must be int32, int64, byte array, or fixed "
+              "length binary");
       }
     } break;
     case ::arrow::Type::DECIMAL128: {
       switch (descr->physical_type()) {
+        case ::parquet::Type::INT32: {
+          auto fn = DecimalIntegerTransfer<Decimal128Array, Int32Type>;
+          RETURN_NOT_OK(fn(reader, pool, value_field, &result));
+        } break;
+        case ::parquet::Type::INT64: {
+          auto fn = DecimalIntegerTransfer<Decimal128Array, Int64Type>;
+          RETURN_NOT_OK(fn(reader, pool, value_field, &result));
+        } break;
         case ::parquet::Type::BYTE_ARRAY: {
           auto fn = &TransferDecimal<Decimal128Array, ByteArrayType>;
           RETURN_NOT_OK(fn(reader, pool, value_field, &result));
@@ -959,11 +983,20 @@ Status TransferColumnData(RecordReader* reader,
         } break;
         default:
           return Status::Invalid(
-              "Physical type for decimal128 must be byte array, or fixed length binary");
+              "Physical type for decimal128 must be int32, int64, byte array, or fixed "
+              "length binary");
       }
     } break;
     case ::arrow::Type::DECIMAL256: {
       switch (descr->physical_type()) {
+        case ::parquet::Type::INT32: {
+          auto fn = DecimalIntegerTransfer<Decimal256Array, Int32Type>;
+          RETURN_NOT_OK(fn(reader, pool, value_field, &result));
+        } break;
+        case ::parquet::Type::INT64: {
+          auto fn = DecimalIntegerTransfer<Decimal256Array, Int64Type>;
+          RETURN_NOT_OK(fn(reader, pool, value_field, &result));
+        } break;
         case ::parquet::Type::BYTE_ARRAY: {
           auto fn = &TransferDecimal<Decimal256Array, ByteArrayType>;
           RETURN_NOT_OK(fn(reader, pool, value_field, &result));
@@ -974,7 +1007,8 @@ Status TransferColumnData(RecordReader* reader,
         } break;
         default:
           return Status::Invalid(
-              "Physical type for decimal256 must be byte array, or fixed length binary");
+              "Physical type for decimal256 must be int32, int64, byte array, or fixed "
+              "length binary");
       }
     } break;
     case ::arrow::Type::TIMESTAMP: {

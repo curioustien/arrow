@@ -67,17 +67,27 @@ const auto TIMESTAMP_MS = ::arrow::timestamp(TimeUnit::MILLI);
 const auto TIMESTAMP_US = ::arrow::timestamp(TimeUnit::MICRO);
 const auto TIMESTAMP_NS = ::arrow::timestamp(TimeUnit::NANO);
 const auto BINARY = ::arrow::binary();
-const auto DECIMAL_8_4 = std::make_shared<::arrow::Decimal32Type>(8, 4);
+const auto DECIMAL32_8_4 = std::make_shared<::arrow::Decimal32Type>(8, 4);
+const auto DECIMAL128_8_4 = std::make_shared<::arrow::Decimal128Type>(8, 4);
 
 class TestConvertParquetSchema : public ::testing::Test {
  public:
   virtual void SetUp() {}
 
   void CheckFlatSchema(const std::shared_ptr<::arrow::Schema>& expected_schema,
-                       bool check_metadata = false) {
+                       bool check_metadata = false, bool convert_to_decimal128 = false) {
     ASSERT_EQ(expected_schema->num_fields(), result_schema_->num_fields());
     for (int i = 0; i < expected_schema->num_fields(); ++i) {
       auto result_field = result_schema_->field(i);
+      if (convert_to_decimal128 &&
+          (result_field->type()->id() == ::arrow::Decimal32Type::type_id ||
+           result_field->type()->id() == ::arrow::Decimal64Type::type_id ||
+           result_field->type()->id() == ::arrow::Decimal256Type::type_id)) {
+        ASSERT_OK_AND_ASSIGN(result_field,
+                             result_field->MergeWith(expected_schema->field(i),
+                                                     ::Field::MergeOptions::Permissive()))
+      }
+
       auto expected_field = expected_schema->field(i);
       EXPECT_TRUE(result_field->Equals(expected_field, check_metadata))
           << "Field " << i << "\n  result: " << result_field->ToString(check_metadata)
@@ -185,13 +195,11 @@ TEST_F(TestConvertParquetSchema, ParquetAnnotatedFields) {
       {"string", LogicalType::String(), ParquetType::BYTE_ARRAY, -1, ::arrow::utf8()},
       {"enum", LogicalType::Enum(), ParquetType::BYTE_ARRAY, -1, ::arrow::binary()},
       {"decimal(8, 2)", LogicalType::Decimal(8, 2), ParquetType::INT32, -1,
-       ::arrow::decimal32(8, 2)},
+       ::arrow::decimal128(8, 2)},
       {"decimal(16, 4)", LogicalType::Decimal(16, 4), ParquetType::INT64, -1,
-       ::arrow::decimal64(16, 4)},
+       ::arrow::decimal128(16, 4)},
       {"decimal(32, 8)", LogicalType::Decimal(32, 8), ParquetType::FIXED_LEN_BYTE_ARRAY,
        16, ::arrow::decimal128(32, 8)},
-      {"decimal(73, 38)", LogicalType::Decimal(73, 38), ParquetType::FIXED_LEN_BYTE_ARRAY,
-       31, ::arrow::decimal256(73, 38)},
       {"date", LogicalType::Date(), ParquetType::INT32, -1, ::arrow::date32()},
       {"time(ms)", LogicalType::Time(true, LogicalType::TimeUnit::MILLIS),
        ParquetType::INT32, -1, ::arrow::time32(::arrow::TimeUnit::MILLI)},
@@ -267,6 +275,48 @@ TEST_F(TestConvertParquetSchema, ParquetAnnotatedFields) {
 
   ASSERT_OK(ConvertSchema(parquet_fields));
   auto arrow_schema = ::arrow::schema(arrow_fields);
+  ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema, /*check_metadata=*/false,
+                                          /*convert_to_decimal128=*/true));
+}
+
+TEST_F(TestConvertParquetSchema, ParquetAnnotatedFieldsDefaultDecimals) {
+  struct FieldConstructionArguments {
+    std::string name;
+    std::shared_ptr<const LogicalType> logical_type;
+    parquet::Type::type physical_type;
+    int physical_length;
+    std::shared_ptr<::arrow::DataType> datatype;
+  };
+
+  std::vector<FieldConstructionArguments> cases = {
+      {"decimal(8, 2)", LogicalType::Decimal(8, 2), ParquetType::INT32, -1,
+       ::arrow::decimal32(8, 2)},
+      {"decimal(8, 2)", LogicalType::Decimal(8, 2), ParquetType::INT64, -1,
+       ::arrow::decimal32(8, 2)},
+      {"decimal(8, 2)", LogicalType::Decimal(8, 2), ParquetType::FIXED_LEN_BYTE_ARRAY, 4,
+       ::arrow::decimal32(8, 2)},
+      {"decimal(16, 4)", LogicalType::Decimal(16, 4), ParquetType::INT64, -1,
+       ::arrow::decimal64(16, 4)},
+      {"decimal(16, 4)", LogicalType::Decimal(16, 4), ParquetType::FIXED_LEN_BYTE_ARRAY,
+       8, ::arrow::decimal64(16, 4)},
+      {"decimal(32, 8)", LogicalType::Decimal(32, 8), ParquetType::FIXED_LEN_BYTE_ARRAY,
+       16, ::arrow::decimal128(32, 8)},
+      {"decimal(73, 38)", LogicalType::Decimal(73, 38), ParquetType::FIXED_LEN_BYTE_ARRAY,
+       31, ::arrow::decimal256(73, 38)},
+  };
+
+  std::vector<NodePtr> parquet_fields;
+  std::vector<std::shared_ptr<Field>> arrow_fields;
+
+  for (const FieldConstructionArguments& c : cases) {
+    parquet_fields.push_back(PrimitiveNode::Make(c.name, Repetition::OPTIONAL,
+                                                 c.logical_type, c.physical_type,
+                                                 c.physical_length));
+    arrow_fields.push_back(::arrow::field(c.name, c.datatype));
+  }
+
+  ASSERT_OK(ConvertSchema(parquet_fields));
+  auto arrow_schema = ::arrow::schema(arrow_fields);
   ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema));
 }
 
@@ -326,34 +376,66 @@ TEST_F(TestConvertParquetSchema, ParquetEmptyKeyValueMetadata) {
   ASSERT_EQ(arrow_metadata, nullptr);
 }
 
-TEST_F(TestConvertParquetSchema, ParquetFlatDecimals) {
+TEST_F(TestConvertParquetSchema, ParquetFlatDecimals32) {
   std::vector<NodePtr> parquet_fields;
   std::vector<std::shared_ptr<Field>> arrow_fields;
 
   parquet_fields.push_back(PrimitiveNode::Make("flba-decimal", Repetition::OPTIONAL,
                                                ParquetType::FIXED_LEN_BYTE_ARRAY,
                                                ConvertedType::DECIMAL, 4, 8, 4));
-  arrow_fields.push_back(::arrow::field("flba-decimal", DECIMAL_8_4));
+  arrow_fields.push_back(::arrow::field("flba-decimal", DECIMAL32_8_4));
 
   parquet_fields.push_back(PrimitiveNode::Make("binary-decimal", Repetition::OPTIONAL,
                                                ParquetType::BYTE_ARRAY,
                                                ConvertedType::DECIMAL, -1, 8, 4));
-  arrow_fields.push_back(::arrow::field("binary-decimal", DECIMAL_8_4));
+  arrow_fields.push_back(::arrow::field("binary-decimal", DECIMAL32_8_4));
 
   parquet_fields.push_back(PrimitiveNode::Make("int32-decimal", Repetition::OPTIONAL,
                                                ParquetType::INT32, ConvertedType::DECIMAL,
                                                -1, 8, 4));
-  arrow_fields.push_back(::arrow::field("int32-decimal", DECIMAL_8_4));
+  arrow_fields.push_back(::arrow::field("int32-decimal", DECIMAL32_8_4));
 
   parquet_fields.push_back(PrimitiveNode::Make("int64-decimal", Repetition::OPTIONAL,
                                                ParquetType::INT64, ConvertedType::DECIMAL,
                                                -1, 8, 4));
-  arrow_fields.push_back(::arrow::field("int64-decimal", DECIMAL_8_4));
+  arrow_fields.push_back(::arrow::field("int64-decimal", DECIMAL32_8_4));
+
+  auto arrow_schema = ::arrow::schema(arrow_fields);
+  ASSERT_OK(ConvertSchema(parquet_fields));
+  ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema));
+}
+
+TEST_F(TestConvertParquetSchema, ParquetFlatDecimals128) {
+  std::vector<NodePtr> parquet_fields;
+  std::vector<std::shared_ptr<Field>> arrow_fields;
+
+  parquet_fields.push_back(PrimitiveNode::Make("flba-decimal", Repetition::OPTIONAL,
+                                               ParquetType::FIXED_LEN_BYTE_ARRAY,
+                                               ConvertedType::DECIMAL, 4, 8, 4));
+  arrow_fields.push_back(::arrow::field("flba-decimal", DECIMAL128_8_4));
+
+  parquet_fields.push_back(PrimitiveNode::Make("binary-decimal", Repetition::OPTIONAL,
+                                               ParquetType::BYTE_ARRAY,
+                                               ConvertedType::DECIMAL, -1, 8, 4));
+  arrow_fields.push_back(::arrow::field("binary-decimal", DECIMAL128_8_4));
+
+  parquet_fields.push_back(PrimitiveNode::Make("int32-decimal", Repetition::OPTIONAL,
+                                               ParquetType::INT32, ConvertedType::DECIMAL,
+                                               -1, 8, 4));
+  arrow_fields.push_back(::arrow::field("int32-decimal", DECIMAL128_8_4));
+
+  parquet_fields.push_back(PrimitiveNode::Make("int64-decimal", Repetition::OPTIONAL,
+                                               ParquetType::INT64, ConvertedType::DECIMAL,
+                                               -1, 8, 4));
+  arrow_fields.push_back(::arrow::field("int64-decimal", DECIMAL128_8_4));
 
   auto arrow_schema = ::arrow::schema(arrow_fields);
   ASSERT_OK(ConvertSchema(parquet_fields));
 
-  ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema));
+  // By default, parquet decimal(8, 4) is converted to arrow decimal32 instead of
+  // decimal128 So, we'll widen this decimal manually
+  ASSERT_NO_FATAL_FAILURE(CheckFlatSchema(arrow_schema, /*check_metadata=*/false,
+                                          /*convert_to_decimal128=*/true));
 }
 
 TEST_F(TestConvertParquetSchema, ParquetMaps) {
@@ -1077,6 +1159,12 @@ TEST_F(TestConvertArrowSchema, ArrowFields) {
        ParquetType::FIXED_LEN_BYTE_ARRAY, 4},
       {"decimal(16, 4)", ::arrow::decimal64(16, 4), LogicalType::Decimal(16, 4),
        ParquetType::FIXED_LEN_BYTE_ARRAY, 7},
+      {"decimal(1, 0)", ::arrow::decimal128(1, 0), LogicalType::Decimal(1, 0),
+       ParquetType::FIXED_LEN_BYTE_ARRAY, 1},
+      {"decimal(8, 2)", ::arrow::decimal128(8, 2), LogicalType::Decimal(8, 2),
+       ParquetType::FIXED_LEN_BYTE_ARRAY, 4},
+      {"decimal(16, 4)", ::arrow::decimal128(16, 4), LogicalType::Decimal(16, 4),
+       ParquetType::FIXED_LEN_BYTE_ARRAY, 7},
       {"decimal(32, 8)", ::arrow::decimal128(32, 8), LogicalType::Decimal(32, 8),
        ParquetType::FIXED_LEN_BYTE_ARRAY, 14},
       {"decimal(73, 38)", ::arrow::decimal256(73, 38), LogicalType::Decimal(73, 38),
@@ -1599,7 +1687,7 @@ TEST_F(TestConvertRoundTrip, FieldIdPreserveAllColumnTypes) {
   std::vector<std::shared_ptr<Field>> arrow_fields;
   arrow_fields.push_back(::arrow::field("c1", INT32, true, FieldIdMetadata(2)));
   arrow_fields.push_back(::arrow::field("c2", DOUBLE, true, FieldIdMetadata(4)));
-  arrow_fields.push_back(::arrow::field("c3", DECIMAL_8_4, true, FieldIdMetadata(6)));
+  arrow_fields.push_back(::arrow::field("c3", DECIMAL128_8_4, true, FieldIdMetadata(6)));
   arrow_fields.push_back(::arrow::field("c4", UTF8, true, FieldIdMetadata(8)));
 
   auto inner_struct =

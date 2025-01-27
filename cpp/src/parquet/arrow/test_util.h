@@ -47,8 +47,10 @@ using ::arrow::Array;
 using ::arrow::ChunkedArray;
 using ::arrow::Status;
 
+struct BaseDecimalWithPrecisionAndScale {};
+
 template <int32_t PRECISION>
-struct Decimal32WithPrecisionAndScale {
+struct Decimal32WithPrecisionAndScale : public BaseDecimalWithPrecisionAndScale {
   static_assert(PRECISION >= ::arrow::Decimal32Type::kMinPrecision &&
                     PRECISION <= ::arrow::Decimal32Type::kMaxPrecision,
                 "Invalid precision value");
@@ -60,7 +62,7 @@ struct Decimal32WithPrecisionAndScale {
 };
 
 template <int32_t PRECISION>
-struct Decimal64WithPrecisionAndScale {
+struct Decimal64WithPrecisionAndScale : public BaseDecimalWithPrecisionAndScale {
   static_assert(PRECISION >= ::arrow::Decimal64Type::kMinPrecision &&
                     PRECISION <= ::arrow::Decimal64Type::kMaxPrecision,
                 "Invalid precision value");
@@ -72,7 +74,7 @@ struct Decimal64WithPrecisionAndScale {
 };
 
 template <int32_t PRECISION>
-struct Decimal128WithPrecisionAndScale {
+struct Decimal128WithPrecisionAndScale : public BaseDecimalWithPrecisionAndScale {
   static_assert(PRECISION >= ::arrow::Decimal128Type::kMinPrecision &&
                     PRECISION <= ::arrow::Decimal128Type::kMaxPrecision,
                 "Invalid precision value");
@@ -84,7 +86,7 @@ struct Decimal128WithPrecisionAndScale {
 };
 
 template <int32_t PRECISION>
-struct Decimal256WithPrecisionAndScale {
+struct Decimal256WithPrecisionAndScale : public BaseDecimalWithPrecisionAndScale {
   static_assert(PRECISION >= ::arrow::Decimal256Type::kMinPrecision &&
                     PRECISION <= ::arrow::Decimal256Type::kMaxPrecision,
                 "Invalid precision value");

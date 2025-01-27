@@ -34,14 +34,18 @@ using ::arrow::internal::checked_cast;
 
 Result<std::shared_ptr<ArrowType>> MakeArrowDecimal(const LogicalType& logical_type) {
   const auto& decimal = checked_cast<const DecimalLogicalType&>(logical_type);
+
+  // By default, we use the decimal type based on precision, but
+  // it can be cast to a wider decimal type from the caller
   if (decimal.precision() <= ::arrow::Decimal32Type::kMaxPrecision) {
     return ::arrow::Decimal32Type::Make(decimal.precision(), decimal.scale());
   } else if (decimal.precision() <= ::arrow::Decimal64Type::kMaxPrecision) {
     return ::arrow::Decimal64Type::Make(decimal.precision(), decimal.scale());
   } else if (decimal.precision() <= ::arrow::Decimal128Type::kMaxPrecision) {
     return ::arrow::Decimal128Type::Make(decimal.precision(), decimal.scale());
+  } else {
+    return ::arrow::Decimal256Type::Make(decimal.precision(), decimal.scale());
   }
-  return ::arrow::Decimal256Type::Make(decimal.precision(), decimal.scale());
 }
 
 Result<std::shared_ptr<ArrowType>> MakeArrowInt(const LogicalType& logical_type) {
