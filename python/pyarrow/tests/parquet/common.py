@@ -52,8 +52,10 @@ def _roundtrip_table(table, read_table_kwargs=None,
     write_table_kwargs = write_table_kwargs or {}
 
     writer = pa.BufferOutputStream()
+    print("Start write table")
     _write_table(table, writer, **write_table_kwargs)
     reader = pa.BufferReader(writer.getvalue())
+    print("Start read table")
     return _read_table(reader, **read_table_kwargs)
 
 
