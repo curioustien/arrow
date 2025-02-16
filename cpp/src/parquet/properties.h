@@ -997,6 +997,8 @@ class PARQUET_EXPORT ArrowReaderProperties {
   }
   bool get_arrow_extensions_enabled() const { return arrow_extensions_enabled_; }
 
+  /// When enabled, Parquet decimal logical types will always be mapped to the smallest
+  /// arrow decimal types based on the precision
   void set_smallest_decimal_enabled(bool smallest_decimal_enabled) {
     smallest_decimal_enabled_ = smallest_decimal_enabled;
   }
