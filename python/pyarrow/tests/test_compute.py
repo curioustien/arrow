@@ -3458,6 +3458,14 @@ def test_rank_normal_options():
     assert result.to_pylist() == expected
 
 
+def test_rank_nulls_and_nans():
+    arr = pa.array([1, None, math.nan, 2, math.nan, None])
+    expected1 = pa.array([1, 5, 3, 2, 3, 5], type=pa.uint64())
+    expected2 = pa.array([5, 1, 3, 6, 3, 1], type=pa.uint64())
+    assert pc.rank(arr, tiebreaker='min', null_placement='at_end').equals(expected1)
+    assert pc.rank(arr, tiebreaker='min', null_placement='at_start').equals(expected2)
+
+
 def create_sample_expressions():
     # We need a schema for substrait conversion
     schema = pa.schema([pa.field("i64", pa.int64()), pa.field(
